@@ -7,20 +7,16 @@ import SlidePreview from "@/components/SlidePreview";
 import Link from "next/link";
 import { AiGenerateButton, AiReferenceSection } from "@/components/AiPanel";
 import type { Slide, SlideText, TextKey, TextPositions } from "@/lib/types";
-import { DEFAULT_POSITIONS } from "@/lib/types";
+import { DEFAULT_POSITIONS, SHE75_DEFAULT_POSITIONS, SHE75_TEXT_STYLE } from "@/lib/types";
 import { exportZip } from "@/lib/exportZip";
 import { stripMetadata } from "@/lib/stripMetadata";
 
-const SLIDE_4_INDEX = 3; // 0-based
+const SLIDE_4_INDEX = 3;
 
 let idCounter = 0;
-function uid() { return `slide-${++idCounter}`; }
+function uid() { return `she75-slide-${++idCounter}`; }
 
-// Module-level stable cache: File → { id, objectUrl }.
-// WeakMap at module scope avoids useRef and is safe to read in useMemo.
 const fileMetaCache = new WeakMap<File, { id: string; objectUrl: string }>();
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 async function fileFromBase64(b64: string, name: string): Promise<File> {
   const bin  = atob(b64);
@@ -35,41 +31,33 @@ async function fileToBase64(file: File): Promise<string> {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
-      resolve(result.split(",")[1]); // strip "data:...;base64,"
+      resolve(result.split(",")[1]);
     };
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
 }
 
-// ── component ─────────────────────────────────────────────────────────────────
-
-export default function HomePage() {
-  // Manual uploads (from ImageDropzone)
+export default function She75Page() {
   const [images,     setImages]     = useState<File[]>([]);
-  // AI-generated images — one entry per slide index, null = not yet generated / skipped
   const [aiImages,   setAiImages]   = useState<(File | null)[]>([]);
   const [slideTexts, setSlideTexts] = useState<SlideText[]>([]);
 
-  // AI state
   const [aiGenerating,   setAiGenerating]   = useState(false);
   const [aiProgress,     setAiProgress]     = useState("");
   const [aiError,        setAiError]        = useState<string | null>(null);
   const [referenceImage, setReferenceImage] = useState<File | null>(null);
 
-  // Per-slide editable prompts & per-slide regen state
   const [editedPrompts, setEditedPrompts] = useState<Record<number, string>>({});
   const [regenIdx,      setRegenIdx]      = useState<number | null>(null);
 
-  // Per-slide text positions
   const [positionsMap, setPositionsMap] = useState<Record<string, TextPositions>>({});
 
-  const [appendPerTen,   setAppendPerTen]   = useState(true);
+  // she75 has no rating field — appendPerTen is permanently false
   const [exporting,      setExporting]      = useState(false);
   const [exportProgress, setExportProgress] = useState<[number, number]>([0, 0]);
   const [exportError,    setExportError]    = useState<string | null>(null);
 
-  // ── derive slides ─────────────────────────────────────────────────────────
   const slides = useMemo(() => {
     const maxLen = Math.max(images.length, aiImages.length, slideTexts.length);
     const result: Slide[] = [];
@@ -86,27 +74,29 @@ export default function HomePage() {
     return result;
   }, [images, aiImages, slideTexts]);
 
-  // Revoke all object URLs on unmount
   const slidesRef = useRef(slides);
   useEffect(() => { slidesRef.current = slides; }, [slides]);
   useEffect(() => {
     return () => { slidesRef.current.forEach((s) => URL.revokeObjectURL(s.objectUrl)); };
   }, []);
 
-  // ── handlers ──────────────────────────────────────────────────────────────
   const handleImagesChange = useCallback((files: File[]) => setImages(files), []);
-  const handleTextsChange  = useCallback((texts: SlideText[]) => setSlideTexts(texts), []);
+  // Strip rating on ingest — she75 doesn't use ratings.
+  const handleTextsChange = useCallback(
+    (texts: SlideText[]) =>
+      setSlideTexts(texts.map(({ heading, subtext }) => ({ heading, subtext }))),
+    [],
+  );
 
   const handlePositionChange = useCallback(
     (slideId: string, key: TextKey, x: number, y: number) => {
       setPositionsMap((prev) => ({
         ...prev,
-        [slideId]: { ...(prev[slideId] ?? DEFAULT_POSITIONS), [key]: { x, y } },
+        [slideId]: { ...(prev[slideId] ?? SHE75_DEFAULT_POSITIONS), [key]: { x, y } },
       }));
     }, [],
   );
 
-  // ── AI generation ─────────────────────────────────────────────────────────
   async function generateOneImage(
     prompt: string,
     slideIndex: number,
@@ -125,7 +115,7 @@ export default function HomePage() {
     const data = await res.json() as { imageBase64?: string; error?: string };
     if (!res.ok || !data.imageBase64) throw new Error(data.error ?? "Image generation failed");
 
-    const raw  = await fileFromBase64(data.imageBase64, `slide-${slideIndex + 1}.png`);
+    const raw = await fileFromBase64(data.imageBase64, `she75-slide-${slideIndex + 1}.png`);
     return stripMetadata(raw);
   }
 
@@ -133,11 +123,11 @@ export default function HomePage() {
     if (slideTexts.length === 0) return;
     setAiGenerating(true);
     setAiError(null);
-    setAiProgress("Generating prompts…");
+    setAiProgress("Generating wellness prompts…");
 
     try {
-      // Step 1: generate prompts
-      const promptRes = await fetch("/api/ai/generate-prompts", {
+      // ── She75-specific prompt generation endpoint ──────────────────────────
+      const promptRes = await fetch("/api/ai/she75/generate-prompts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ slides: slideTexts }),
@@ -147,12 +137,10 @@ export default function HomePage() {
 
       const prompts = promptData.prompts;
 
-      // Seed edited prompts
       const initialEdited: Record<number, string> = {};
       prompts.forEach((p, i) => { if (p) initialEdited[i] = p; });
       setEditedPrompts(initialEdited);
 
-      // Get reference image base64 if provided
       let refBase64: string | null = null;
       let refMediaType: string | null = null;
       if (referenceImage) {
@@ -160,14 +148,11 @@ export default function HomePage() {
         refMediaType = referenceImage.type || "image/png";
       }
 
-      // Step 2: generate all images in parallel — each updates state as it lands
       const indicesToGenerate = prompts
         .map((p, i) => (p ? i : null))
         .filter((i): i is number => i !== null);
 
       setAiProgress(`Generating ${indicesToGenerate.length} images in parallel…`);
-
-      // Initialise the array to the right length so slot indices are stable
       setAiImages(Array.from({ length: prompts.length }, () => null));
 
       await Promise.all(
@@ -175,7 +160,6 @@ export default function HomePage() {
           const prompt = prompts[i]!;
           try {
             const file = await generateOneImage(prompt, i, refBase64, refMediaType);
-            // Write only this slot — preserves any concurrent updates
             setAiImages((prev) => {
               const next = [...prev];
               while (next.length <= i) next.push(null);
@@ -183,7 +167,6 @@ export default function HomePage() {
               return next;
             });
           } catch (err) {
-            // Surface per-image errors without killing other parallel jobs
             console.error(`Slide ${i + 1} generation failed:`, err);
             setAiError(`Slide ${i + 1} failed: ${err instanceof Error ? err.message : "Unknown error"}`);
           }
@@ -225,20 +208,18 @@ export default function HomePage() {
     }
   }
 
-  // ── slide-4 manual upload ─────────────────────────────────────────────────
-  // Write to aiImages at index 3 so the index is preserved correctly.
-  // (Writing to images[] would require padding with nulls that break the merge.)
-  async function handleSlot4Upload(file: File) {
+  // Generalized slot uploader — works for slide 4, extra slides added after AI
+  // generation, or any index that doesn't yet have an image.
+  async function handleSlotUpload(slotIndex: number, file: File) {
     const stripped = await stripMetadata(file);
     setAiImages((prev) => {
       const next = [...prev];
-      while (next.length <= SLIDE_4_INDEX) next.push(null);
-      next[SLIDE_4_INDEX] = stripped;
+      while (next.length <= slotIndex) next.push(null);
+      next[slotIndex] = stripped;
       return next;
     });
   }
 
-  // ── export ────────────────────────────────────────────────────────────────
   async function handleExport() {
     if (slides.length === 0) return;
     setExporting(true);
@@ -247,9 +228,10 @@ export default function HomePage() {
     try {
       const slidesForExport = slides.map((s) => ({
         ...s,
-        positions: positionsMap[s.id] ?? DEFAULT_POSITIONS,
+        positions: positionsMap[s.id] ?? SHE75_DEFAULT_POSITIONS,
+        textStyle: SHE75_TEXT_STYLE,
       }));
-      await exportZip(slidesForExport, appendPerTen, (done, total) => {
+      await exportZip(slidesForExport, false, (done, total) => {
         setExportProgress([done, total]);
       });
     } catch (err) {
@@ -261,12 +243,14 @@ export default function HomePage() {
 
   const [exportDone, exportTotal] = exportProgress;
 
-  // ── does slot 4 need an image? ────────────────────────────────────────────
-  const slide4Needed =
-    aiImages.length > 0 &&        // AI has been run
-    slideTexts.length > SLIDE_4_INDEX && // there IS a slide 4
-    !images[SLIDE_4_INDEX] &&     // user hasn't manually uploaded
-    !aiImages[SLIDE_4_INDEX];     // AI didn't generate (expected)
+  // Every text entry that has no image yet (manual or AI) gets its own upload card.
+  // This covers: slide 4 (always skipped by AI), Pro tip slides, and any extra
+  // entries the user adds to the JSON after AI generation has already run.
+  const emptySlots = aiImages.length > 0
+    ? slideTexts
+        .map((_, i) => i)
+        .filter((i) => !images[i] && !aiImages[i])
+    : [];
 
   return (
     <main className="min-h-screen bg-gray-950 text-white">
@@ -274,12 +258,12 @@ export default function HomePage() {
       <header className="border-b border-white/10 px-6 py-5 flex items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold tracking-tight">Caraouseler</h1>
+            <h1 className="text-xl font-bold tracking-tight">She75</h1>
             <Link
-              href="/she75"
-              className="text-xs text-rose-400 hover:text-rose-300 border border-rose-500/30 hover:border-rose-400/50 rounded-lg px-2.5 py-1 transition-colors"
+              href="/"
+              className="text-xs text-indigo-400 hover:text-indigo-300 border border-indigo-500/30 hover:border-indigo-400/50 rounded-lg px-2.5 py-1 transition-colors"
             >
-              🌿 She75
+              ← Carousel Builder
             </Link>
             <Link
               href="/transform"
@@ -289,12 +273,11 @@ export default function HomePage() {
             </Link>
           </div>
           <p className="text-white/40 text-sm">
-            Compose carousel slides with text overlays &amp; download as ZIP
+            Wellness lifestyle carousel — AI generates quiet-luxury aesthetic images
           </p>
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0">
-          {/* Big red AI button */}
           <AiGenerateButton
             hasSlideTexts={slideTexts.length > 0}
             generating={aiGenerating}
@@ -302,7 +285,6 @@ export default function HomePage() {
             onGenerate={handleAiGenerate}
           />
 
-          {/* Download ZIP */}
           {slides.length > 0 && (
             <button
               type="button"
@@ -324,7 +306,6 @@ export default function HomePage() {
       </header>
 
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-10">
-        {/* Steps 1, 2 & AI reference ──────────────────────────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <section className="space-y-4">
             <SectionLabel n={1} label="Upload Images" hint="(manual — or use AI Generate)" />
@@ -338,19 +319,9 @@ export default function HomePage() {
               imageCount={images.length}
               onChange={handleTextsChange}
             />
-            {/* Rating /10 toggle */}
-            <label className="flex items-center gap-2.5 cursor-pointer w-fit select-none group">
-              <span className={["relative inline-flex w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0", appendPerTen ? "bg-indigo-600" : "bg-white/15"].join(" ")}>
-                <input type="checkbox" checked={appendPerTen} onChange={(e) => setAppendPerTen(e.target.checked)} className="sr-only" />
-                <span className={["absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200", appendPerTen ? "translate-x-4" : "translate-x-0"].join(" ")} />
-              </span>
-              <span className="text-sm text-white/70 group-hover:text-white/90 transition-colors">
-                Append <code className="text-white/50">/10</code> to rating
-              </span>
-            </label>
+            <p className="text-white/30 text-xs">Rating field is not used in She75 — it will be ignored if included in your JSON.</p>
           </section>
 
-          {/* Step 3 — AI Reference Image */}
           <section className="space-y-4">
             <SectionLabel n={3} label="AI Style Reference" hint="(for Generate with AI)" />
             <AiReferenceSection
@@ -361,19 +332,25 @@ export default function HomePage() {
           </section>
         </div>
 
-        {/* Export error */}
         {exportError && (
           <p className="text-red-400 text-sm bg-red-900/20 rounded-lg px-4 py-3 border border-red-500/20">
             {exportError}
           </p>
         )}
 
-        {/* Slide 4 upload prompt ───────────────────────────────────────────── */}
-        {slide4Needed && (
-          <Slide4Uploader onUpload={handleSlot4Upload} />
+        {emptySlots.length > 0 && (
+          <div className="space-y-3">
+            {emptySlots.map((slotIdx) => (
+              <SlotUploader
+                key={slotIdx}
+                slotIndex={slotIdx}
+                heading={slideTexts[slotIdx]?.heading}
+                onUpload={(file) => handleSlotUpload(slotIdx, file)}
+              />
+            ))}
+          </div>
         )}
 
-        {/* Preview grid ───────────────────────────────────────────────────── */}
         {slides.length > 0 && (
           <section className="space-y-5">
             <div className="flex items-center justify-between">
@@ -400,7 +377,6 @@ export default function HomePage() {
 
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4">
               {slides.map((slide, i) => {
-                // Find the original text index for this slide
                 const textIdx = slideTexts.indexOf(slide.text as SlideText);
                 const originalIdx = textIdx >= 0 ? textIdx : i;
 
@@ -409,9 +385,10 @@ export default function HomePage() {
                     key={slide.id}
                     slide={slide}
                     index={originalIdx}
-                    positions={positionsMap[slide.id] ?? DEFAULT_POSITIONS}
+                    positions={positionsMap[slide.id] ?? SHE75_DEFAULT_POSITIONS}
+                    textStyle={SHE75_TEXT_STYLE}
                     onPositionChange={(key, x, y) => handlePositionChange(slide.id, key, x, y)}
-                    appendPerTen={appendPerTen}
+                    appendPerTen={false}
                     prompt={editedPrompts[originalIdx]}
                     onPromptChange={(p) => setEditedPrompts((prev) => ({ ...prev, [originalIdx]: p }))}
                     onRegenerate={() => handleRegenerate(originalIdx)}
@@ -423,13 +400,12 @@ export default function HomePage() {
           </section>
         )}
 
-        {/* Empty state ─────────────────────────────────────────────────────── */}
         {slides.length === 0 && (
           <div className="text-center py-24 text-white/20">
-            <p className="text-6xl mb-4">🎠</p>
+            <p className="text-6xl mb-4">🌿</p>
             <p className="text-lg font-medium">Upload images or use AI Generate to get started</p>
             <p className="text-sm mt-1">
-              Add text data (Step 2) then hit the red AI button to generate images
+              Add text data (Step 2) then hit the red AI button — she75 generates wellness lifestyle imagery
             </p>
           </div>
         )}
@@ -437,8 +413,6 @@ export default function HomePage() {
     </main>
   );
 }
-
-// ── sub-components ────────────────────────────────────────────────────────────
 
 function SectionLabel({ n, label, hint }: { n: number; label: string; hint?: string }) {
   return (
@@ -450,9 +424,22 @@ function SectionLabel({ n, label, hint }: { n: number; label: string; hint?: str
   );
 }
 
-function Slide4Uploader({ onUpload }: { onUpload: (file: File) => void }) {
+function SlotUploader({
+  slotIndex,
+  heading,
+  onUpload,
+}: {
+  slotIndex: number;
+  heading?: string;
+  onUpload: (file: File) => void;
+}) {
   const ref = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
+
+  const slideNum = slotIndex + 1;
+  const label = heading?.trim()
+    ? `Slide ${slideNum} — "${heading.trim()}"`
+    : `Slide ${slideNum}`;
 
   function handleFiles(files: FileList | null) {
     const f = Array.from(files ?? []).find((f) => f.type.startsWith("image/"));
@@ -463,10 +450,12 @@ function Slide4Uploader({ onUpload }: { onUpload: (file: File) => void }) {
     <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-5 space-y-3">
       <div className="flex items-center gap-2">
         <span className="text-amber-400 text-lg">⚠</span>
-        <p className="text-amber-300 font-semibold text-sm">Slide 4 — Upload Your Own Image</p>
+        <p className="text-amber-300 font-semibold text-sm">{label} — Upload Image</p>
       </div>
       <p className="text-white/50 text-xs">
-        AI skips slide 4 by design. Upload the image you want for that slide below.
+        {slotIndex === SLIDE_4_INDEX
+          ? "AI skips slide 4 by design. Upload the image you want for this slide."
+          : "This slide has no image yet. Upload one manually or add it to your JSON and re-run AI."}
       </p>
       <button
         type="button"
@@ -476,7 +465,7 @@ function Slide4Uploader({ onUpload }: { onUpload: (file: File) => void }) {
         onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
         className={["w-full rounded-xl border-2 border-dashed py-6 text-center text-sm transition-colors", dragging ? "border-amber-400 bg-amber-900/20" : "border-amber-500/30 bg-white/5 hover:border-amber-400/60"].join(" ")}
       >
-        <p className="text-white/60">Drop or click to upload Slide 4 image</p>
+        <p className="text-white/60">Drop or click to upload image for {label}</p>
       </button>
       <input ref={ref} type="file" accept="image/*" className="hidden" onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
     </div>
