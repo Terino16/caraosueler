@@ -7,7 +7,7 @@ import SlidePreview from "@/components/SlidePreview";
 import Link from "next/link";
 import { AiGenerateButton, AiReferenceSection } from "@/components/AiPanel";
 import type { Slide, SlideText, TextKey, TextPositions } from "@/lib/types";
-import { DEFAULT_POSITIONS } from "@/lib/types";
+import { DEFAULT_POSITIONS, DEFAULT_APP_ICON } from "@/lib/types";
 import { exportZip } from "@/lib/exportZip";
 import { stripMetadata } from "@/lib/stripMetadata";
 
@@ -64,6 +64,9 @@ export default function HomePage() {
   // Per-slide text positions
   const [positionsMap, setPositionsMap] = useState<Record<string, TextPositions>>({});
 
+  // App icon overlay on slide 4
+  const [appIcon, setAppIcon] = useState(DEFAULT_APP_ICON);
+
   const [appendPerTen,   setAppendPerTen]   = useState(true);
   const [exporting,      setExporting]      = useState(false);
   const [exportProgress, setExportProgress] = useState<[number, number]>([0, 0]);
@@ -106,6 +109,14 @@ export default function HomePage() {
     }, [],
   );
 
+  const handleAppIconPositionChange = useCallback((x: number, y: number) => {
+    setAppIcon((prev) => ({ ...prev, x, y }));
+  }, []);
+
+  const handleAppIconBorderRadiusChange = useCallback((borderRadius: number) => {
+    setAppIcon((prev) => ({ ...prev, borderRadius }));
+  }, []);
+
   // ── AI generation ─────────────────────────────────────────────────────────
   async function generateOneImage(
     prompt: string,
@@ -136,11 +147,25 @@ export default function HomePage() {
     setAiProgress("Generating prompts…");
 
     try {
+      // Get reference image base64 up front so it can lock style for both the
+      // prompt-writing step and the image-generation step.
+      let refBase64: string | null = null;
+      let refMediaType: string | null = null;
+      if (referenceImage) {
+        refBase64    = await fileToBase64(referenceImage);
+        refMediaType = referenceImage.type || "image/png";
+      }
+
       // Step 1: generate prompts
       const promptRes = await fetch("/api/ai/generate-prompts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slides: slideTexts }),
+        body: JSON.stringify({
+          slides: slideTexts,
+          referenceImageBase64: refBase64,
+          referenceMediaType: refMediaType,
+          brand: "gym",
+        }),
       });
       const promptData = await promptRes.json() as { prompts?: (string | null)[]; error?: string };
       if (!promptRes.ok || !promptData.prompts) throw new Error(promptData.error ?? "Prompt generation failed");
@@ -151,14 +176,6 @@ export default function HomePage() {
       const initialEdited: Record<number, string> = {};
       prompts.forEach((p, i) => { if (p) initialEdited[i] = p; });
       setEditedPrompts(initialEdited);
-
-      // Get reference image base64 if provided
-      let refBase64: string | null = null;
-      let refMediaType: string | null = null;
-      if (referenceImage) {
-        refBase64    = await fileToBase64(referenceImage);
-        refMediaType = referenceImage.type || "image/png";
-      }
 
       // Step 2: generate all images in parallel — each updates state as it lands
       const indicesToGenerate = prompts
@@ -245,13 +262,18 @@ export default function HomePage() {
     setExportError(null);
     setExportProgress([0, slides.length]);
     try {
-      const slidesForExport = slides.map((s) => ({
-        ...s,
-        positions: positionsMap[s.id] ?? DEFAULT_POSITIONS,
-      }));
+      const slidesForExport = slides.map((s, i) => {
+        const textIdx = slideTexts.indexOf(s.text as SlideText);
+        const originalIdx = textIdx >= 0 ? textIdx : i;
+        return {
+          ...s,
+          positions: positionsMap[s.id] ?? DEFAULT_POSITIONS,
+          appIcon: originalIdx === SLIDE_4_INDEX ? appIcon : undefined,
+        };
+      });
       await exportZip(slidesForExport, appendPerTen, (done, total) => {
         setExportProgress([done, total]);
-      });
+      }, "gymnerds");
     } catch (err) {
       setExportError(err instanceof Error ? err.message : "Export failed.");
     } finally {
@@ -273,8 +295,11 @@ export default function HomePage() {
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <header className="border-b border-white/10 px-6 py-5 flex items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-xl font-bold tracking-tight">Caraouseler</h1>
+            <span className="text-xs text-indigo-300 border border-indigo-500/40 bg-indigo-950/30 rounded-lg px-2.5 py-1">
+              💪 Gym Carousels
+            </span>
             <Link
               href="/she75"
               className="text-xs text-rose-400 hover:text-rose-300 border border-rose-500/30 hover:border-rose-400/50 rounded-lg px-2.5 py-1 transition-colors"
@@ -412,6 +437,10 @@ export default function HomePage() {
                     positions={positionsMap[slide.id] ?? DEFAULT_POSITIONS}
                     onPositionChange={(key, x, y) => handlePositionChange(slide.id, key, x, y)}
                     appendPerTen={appendPerTen}
+                    showAppIcon={originalIdx === SLIDE_4_INDEX}
+                    appIcon={appIcon}
+                    onAppIconPositionChange={handleAppIconPositionChange}
+                    onAppIconBorderRadiusChange={handleAppIconBorderRadiusChange}
                     prompt={editedPrompts[originalIdx]}
                     onPromptChange={(p) => setEditedPrompts((prev) => ({ ...prev, [originalIdx]: p }))}
                     onRegenerate={() => handleRegenerate(originalIdx)}

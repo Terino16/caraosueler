@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Slide, TextKey, TextPositions, TextStyle } from "@/lib/types";
-import { DEFAULT_TEXT_STYLE } from "@/lib/types";
+import type { Slide, TextKey, TextPositions, TextStyle, AppIconConfig } from "@/lib/types";
+import { DEFAULT_TEXT_STYLE, APP_ICON_SRC } from "@/lib/types";
 import {
   drawSlide,
   getTextCentres,
+  getAppIconBounds,
   CANVAS_WIDTH,
   CANVAS_HEIGHT,
+  type DragTarget,
 } from "@/lib/renderSlide";
 
 interface Props {
@@ -17,6 +19,13 @@ interface Props {
   onPositionChange: (key: TextKey, x: number, y: number) => void;
   appendPerTen: boolean;
   textStyle?: TextStyle;
+  // App icon overlay (slide 4)
+  showAppIcon?: boolean;
+  appIcon?: AppIconConfig;
+  iconSrc?: string;
+  onAppIconPositionChange?: (x: number, y: number) => void;
+  onAppIconSizeChange?: (size: number) => void;
+  onAppIconBorderRadiusChange?: (borderRadius: number) => void;
   // AI prompt editing & regeneration
   prompt?: string;
   onPromptChange?: (prompt: string) => void;
@@ -25,7 +34,7 @@ interface Props {
 }
 
 interface DragState {
-  key: TextKey;
+  key: DragTarget;
   startClientX: number;
   startClientY: number;
   startNormX: number;
@@ -42,6 +51,12 @@ export default function SlidePreview({
   onPositionChange,
   appendPerTen,
   textStyle = DEFAULT_TEXT_STYLE,
+  showAppIcon = false,
+  appIcon,
+  iconSrc = APP_ICON_SRC,
+  onAppIconPositionChange,
+  onAppIconSizeChange,
+  onAppIconBorderRadiusChange,
   prompt,
   onPromptChange,
   onRegenerate,
@@ -50,20 +65,28 @@ export default function SlidePreview({
   const [promptOpen, setPromptOpen] = useState(false);
   const canvasRef  = useRef<HTMLCanvasElement>(null);
   const imgRef     = useRef<HTMLImageElement | null>(null);
+  const iconRef    = useRef<HTMLImageElement | null>(null);
   const dragRef    = useRef<DragState | null>(null);
-  const [activeKey, setActiveKey] = useState<TextKey | null>(null);
-  const [hoverKey,  setHoverKey]  = useState<TextKey | null>(null);
+  const [activeKey, setActiveKey] = useState<DragTarget | null>(null);
+  const [hoverKey,  setHoverKey]  = useState<DragTarget | null>(null);
 
   // ── draw ───────────────────────────────────────────────────────────────────
   const redraw = useCallback(
-    (img: HTMLImageElement, ak: TextKey | null) => {
+    (img: HTMLImageElement, ak: DragTarget | null) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      drawSlide(ctx, img, slide.text, positions, CANVAS_WIDTH, CANVAS_HEIGHT, ak, appendPerTen, textStyle);
+      const iconOverlay =
+        showAppIcon && appIcon && iconRef.current
+          ? { image: iconRef.current, config: appIcon }
+          : null;
+      drawSlide(
+        ctx, img, slide.text, positions, CANVAS_WIDTH, CANVAS_HEIGHT,
+        ak, appendPerTen, textStyle, iconOverlay,
+      );
     },
-    [slide.text, positions, appendPerTen, textStyle],
+    [slide.text, positions, appendPerTen, textStyle, showAppIcon, appIcon],
   );
 
   useEffect(() => {
@@ -75,7 +98,17 @@ export default function SlidePreview({
     img.src = slide.objectUrl;
   }, [slide.objectUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Redraw when text, positions, or activeKey changes (but NOT on objectUrl change)
+  useEffect(() => {
+    if (!showAppIcon) return;
+    const icon = new Image();
+    icon.onload = () => {
+      iconRef.current = icon;
+      if (imgRef.current) redraw(imgRef.current, activeKey);
+    };
+    icon.src = iconSrc;
+  }, [showAppIcon, iconSrc]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Redraw when text, positions, app icon, or activeKey changes
   useEffect(() => {
     if (imgRef.current) redraw(imgRef.current, activeKey);
   }, [redraw, activeKey]);
@@ -93,14 +126,23 @@ export default function SlidePreview({
   );
 
   const findHit = useCallback(
-    (nx: number, ny: number): TextKey | null => {
+    (nx: number, ny: number): DragTarget | null => {
+      const px = nx * CANVAS_WIDTH;
+      const py = ny * CANVAS_HEIGHT;
+
+      if (showAppIcon && appIcon) {
+        const { left, top, size } = getAppIconBounds(appIcon, CANVAS_WIDTH, CANVAS_HEIGHT);
+        if (px >= left && px <= left + size && py >= top && py <= top + size) {
+          return "appIcon";
+        }
+      }
+
       const centres = getTextCentres(positions, 1, 1);
       const keys: TextKey[] = ["heading", "rating", "subtext"];
       let best: TextKey | null = null;
       let bestDist = Infinity;
 
       for (const key of keys) {
-        // Only consider elements that have content
         const t = slide.text;
         if (!t) continue;
         if (key === "heading" && !t.heading) continue;
@@ -118,7 +160,7 @@ export default function SlidePreview({
       }
       return best;
     },
-    [positions, slide.text],
+    [positions, slide.text, showAppIcon, appIcon],
   );
 
   // ── drag start (mouse) ─────────────────────────────────────────────────────
@@ -134,12 +176,12 @@ export default function SlidePreview({
         key: hit,
         startClientX: e.clientX,
         startClientY: e.clientY,
-        startNormX: positions[hit].x,
-        startNormY: positions[hit].y,
+        startNormX: hit === "appIcon" && appIcon ? appIcon.x : positions[hit as TextKey].x,
+        startNormY: hit === "appIcon" && appIcon ? appIcon.y : positions[hit as TextKey].y,
       };
       setActiveKey(hit);
     },
-    [clientToNorm, findHit, positions],
+    [clientToNorm, findHit, positions, appIcon],
   );
 
   // ── drag start (touch) ─────────────────────────────────────────────────────
@@ -156,12 +198,12 @@ export default function SlidePreview({
         key: hit,
         startClientX: t.clientX,
         startClientY: t.clientY,
-        startNormX: positions[hit].x,
-        startNormY: positions[hit].y,
+        startNormX: hit === "appIcon" && appIcon ? appIcon.x : positions[hit as TextKey].x,
+        startNormY: hit === "appIcon" && appIcon ? appIcon.y : positions[hit as TextKey].y,
       };
       setActiveKey(hit);
     },
-    [clientToNorm, findHit, positions],
+    [clientToNorm, findHit, positions, appIcon],
   );
 
   // ── global mouse/touch move & up ──────────────────────────────────────────
@@ -175,7 +217,11 @@ export default function SlidePreview({
       const dy = (clientY - drag.startClientY) / rect.height;
       const nx = Math.max(0, Math.min(1, drag.startNormX + dx));
       const ny = Math.max(0, Math.min(1, drag.startNormY + dy));
-      onPositionChange(drag.key, nx, ny);
+      if (drag.key === "appIcon") {
+        onAppIconPositionChange?.(nx, ny);
+      } else {
+        onPositionChange(drag.key, nx, ny);
+      }
     }
 
     function onEnd() {
@@ -201,7 +247,7 @@ export default function SlidePreview({
       window.removeEventListener("touchmove",  handleTouchMove);
       window.removeEventListener("touchend",   handleTouchEnd);
     };
-  }, [onPositionChange]);
+  }, [onPositionChange, onAppIconPositionChange]);
 
   // ── hover cursor ───────────────────────────────────────────────────────────
   const onMouseMove = useCallback(
@@ -250,15 +296,52 @@ export default function SlidePreview({
         />
 
         {/* Drag hint */}
-        {slide.text &&
-          (slide.text.heading || slide.text.rating !== undefined || slide.text.subtext) && (
+        {(slide.text &&
+          (slide.text.heading || slide.text.rating !== undefined || slide.text.subtext)) ||
+          showAppIcon ? (
             <div className="absolute bottom-1.5 left-0 right-0 flex justify-center pointer-events-none">
               <span className="text-white/30 text-[9px] bg-black/40 rounded px-1.5 py-0.5 select-none">
                 drag to reposition
               </span>
             </div>
-          )}
+          ) : null}
       </div>
+
+      {/* App icon controls */}
+      {showAppIcon && appIcon && (
+        <div className="space-y-1.5 px-1">
+          {onAppIconSizeChange && (
+            <label className="flex items-center gap-2 text-[10px] text-white/50">
+              <span className="flex-shrink-0">Logo size</span>
+              <input
+                type="range"
+                min={0.05}
+                max={0.5}
+                step={0.01}
+                value={appIcon.size}
+                onChange={(e) => onAppIconSizeChange(Number(e.target.value))}
+                className="flex-1 accent-indigo-500"
+              />
+              <span className="w-8 text-right tabular-nums">{Math.round(appIcon.size * 100)}%</span>
+            </label>
+          )}
+          {onAppIconBorderRadiusChange && (
+            <label className="flex items-center gap-2 text-[10px] text-white/50">
+              <span className="flex-shrink-0">Roundness</span>
+              <input
+                type="range"
+                min={0}
+                max={0.5}
+                step={0.01}
+                value={appIcon.borderRadius}
+                onChange={(e) => onAppIconBorderRadiusChange(Number(e.target.value))}
+                className="flex-1 accent-indigo-500"
+              />
+              <span className="w-8 text-right tabular-nums">{Math.round(appIcon.borderRadius * 100)}%</span>
+            </label>
+          )}
+        </div>
+      )}
 
       {/* ── Meta ────────────────────────────────────────────────────────────── */}
       <div className="px-1 space-y-0.5">

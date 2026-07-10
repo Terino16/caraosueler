@@ -63,3 +63,26 @@ export const SHE75_DEFAULT_POSITIONS: TextPositions = {
   rating:  { x: 0.06, y: 0.5  }, // unused in she75 but required for type compat
   subtext: { x: 0.06, y: 0.62 },
 };
+
+// ── App icon overlay (slide 4) ────────────────────────────────────────────────
+
+export const APP_ICON_SRC = "/120.png";
+export const SHE75_LOGO_SRC = "/Logo.png";
+
+export interface AppIconConfig {
+  /** Centre X, normalised 0–1 */
+  x: number;
+  /** Centre Y, normalised 0–1 */
+  y: number;
+  /** Icon width as a fraction of canvas width */
+  size: number;
+  /** Corner radius as a fraction of icon size (0 = square, ~0.22 = iOS-like) */
+  borderRadius: number;
+}
+
+export const DEFAULT_APP_ICON: AppIconConfig = {
+  x: 0.5,
+  y: 0.82,
+  size: 0.2,
+  borderRadius: 0.22,
+};

@@ -7,7 +7,7 @@ import SlidePreview from "@/components/SlidePreview";
 import Link from "next/link";
 import { AiGenerateButton, AiReferenceSection } from "@/components/AiPanel";
 import type { Slide, SlideText, TextKey, TextPositions } from "@/lib/types";
-import { DEFAULT_POSITIONS, SHE75_DEFAULT_POSITIONS, SHE75_TEXT_STYLE } from "@/lib/types";
+import { SHE75_DEFAULT_POSITIONS, SHE75_TEXT_STYLE, DEFAULT_APP_ICON, SHE75_LOGO_SRC } from "@/lib/types";
 import { exportZip } from "@/lib/exportZip";
 import { stripMetadata } from "@/lib/stripMetadata";
 
@@ -53,6 +53,9 @@ export default function She75Page() {
 
   const [positionsMap, setPositionsMap] = useState<Record<string, TextPositions>>({});
 
+  // Logo overlay on slide 4
+  const [appIcon, setAppIcon] = useState(DEFAULT_APP_ICON);
+
   // she75 has no rating field — appendPerTen is permanently false
   const [exporting,      setExporting]      = useState(false);
   const [exportProgress, setExportProgress] = useState<[number, number]>([0, 0]);
@@ -96,6 +99,18 @@ export default function She75Page() {
       }));
     }, [],
   );
+
+  const handleAppIconPositionChange = useCallback((x: number, y: number) => {
+    setAppIcon((prev) => ({ ...prev, x, y }));
+  }, []);
+
+  const handleAppIconSizeChange = useCallback((size: number) => {
+    setAppIcon((prev) => ({ ...prev, size }));
+  }, []);
+
+  const handleAppIconBorderRadiusChange = useCallback((borderRadius: number) => {
+    setAppIcon((prev) => ({ ...prev, borderRadius }));
+  }, []);
 
   async function generateOneImage(
     prompt: string,
@@ -226,14 +241,20 @@ export default function She75Page() {
     setExportError(null);
     setExportProgress([0, slides.length]);
     try {
-      const slidesForExport = slides.map((s) => ({
-        ...s,
-        positions: positionsMap[s.id] ?? SHE75_DEFAULT_POSITIONS,
-        textStyle: SHE75_TEXT_STYLE,
-      }));
+      const slidesForExport = slides.map((s, i) => {
+        const textIdx = slideTexts.indexOf(s.text as SlideText);
+        const originalIdx = textIdx >= 0 ? textIdx : i;
+        return {
+          ...s,
+          positions: positionsMap[s.id] ?? SHE75_DEFAULT_POSITIONS,
+          textStyle: SHE75_TEXT_STYLE,
+          appIcon: originalIdx === SLIDE_4_INDEX ? appIcon : undefined,
+          overlayAssetSrc: originalIdx === SLIDE_4_INDEX ? SHE75_LOGO_SRC : undefined,
+        };
+      });
       await exportZip(slidesForExport, false, (done, total) => {
         setExportProgress([done, total]);
-      });
+      }, "she75");
     } catch (err) {
       setExportError(err instanceof Error ? err.message : "Export failed.");
     } finally {
@@ -389,6 +410,12 @@ export default function She75Page() {
                     textStyle={SHE75_TEXT_STYLE}
                     onPositionChange={(key, x, y) => handlePositionChange(slide.id, key, x, y)}
                     appendPerTen={false}
+                    showAppIcon={originalIdx === SLIDE_4_INDEX}
+                    appIcon={appIcon}
+                    iconSrc={SHE75_LOGO_SRC}
+                    onAppIconPositionChange={handleAppIconPositionChange}
+                    onAppIconSizeChange={handleAppIconSizeChange}
+                    onAppIconBorderRadiusChange={handleAppIconBorderRadiusChange}
                     prompt={editedPrompts[originalIdx]}
                     onPromptChange={(p) => setEditedPrompts((prev) => ({ ...prev, [originalIdx]: p }))}
                     onRegenerate={() => handleRegenerate(originalIdx)}

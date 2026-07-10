@@ -1,4 +1,4 @@
-import type { SlideText, TextPositions, TextKey, TextStyle } from "./types";
+import type { SlideText, TextPositions, TextKey, TextStyle, AppIconConfig } from "./types";
 import { DEFAULT_TEXT_STYLE } from "./types";
 
 export const CANVAS_WIDTH  = 1080;
@@ -172,6 +172,56 @@ function drawGrain(ctx: CanvasRenderingContext2D, width: number, height: number)
   drawGrainLayer(ctx, width, height, 0.01, 128);  // 1 % coarser grain
 }
 
+export type DragTarget = TextKey | "appIcon";
+
+export function getAppIconBounds(
+  config: AppIconConfig,
+  width: number,
+  height: number,
+): { cx: number; cy: number; size: number; left: number; top: number } {
+  const size = config.size * width;
+  const cx   = config.x * width;
+  const cy   = config.y * height;
+  return {
+    cx,
+    cy,
+    size,
+    left: cx - size / 2,
+    top:  cy - size / 2,
+  };
+}
+
+function drawAppIcon(
+  ctx: CanvasRenderingContext2D,
+  icon: HTMLImageElement,
+  config: AppIconConfig,
+  width: number,
+  height: number,
+  active: boolean,
+): void {
+  const { left, top, size } = getAppIconBounds(config, width, height);
+  const radius = config.borderRadius * size;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(left, top, size, size, radius);
+  ctx.clip();
+  ctx.drawImage(icon, left, top, size, size);
+  ctx.restore();
+
+  if (active) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.lineWidth   = Math.round(width / 270);
+    ctx.setLineDash([Math.round(width / 108), Math.round(width / 216)]);
+    ctx.beginPath();
+    ctx.roundRect(left, top, size, size, radius);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+}
+
 // ── public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -186,9 +236,10 @@ export function drawSlide(
   positions: TextPositions,
   width: number,
   height: number,
-  activeKey?: TextKey | null,
+  activeKey?: DragTarget | null,
   appendPerTen = true,
   textStyle: TextStyle = DEFAULT_TEXT_STYLE,
+  appIcon?: { image: HTMLImageElement; config: AppIconConfig } | null,
 ) {
   // ── black letterbox background ────────────────────────────────────────────
   ctx.fillStyle = "#000000";
@@ -213,6 +264,9 @@ export function drawSlide(
   ctx.drawImage(image, drawX, drawY, drawW, drawH);
 
   if (!text) {
+    if (appIcon) {
+      drawAppIcon(ctx, appIcon.image, appIcon.config, width, height, activeKey === "appIcon");
+    }
     drawGrain(ctx, width, height);
     return;
   }
@@ -253,6 +307,11 @@ export function drawSlide(
       ctx, text.subtext, SUBTEXT_SIZE * s, "400", cx, cy, mw,
       activeKey === "subtext", textStyle,
     );
+  }
+
+  // ── app icon overlay ──────────────────────────────────────────────────────
+  if (appIcon) {
+    drawAppIcon(ctx, appIcon.image, appIcon.config, width, height, activeKey === "appIcon");
   }
 
   // ── grain — drawn last so it sits on top of everything ────────────────────
